@@ -1,0 +1,4 @@
+*.ZAP
+data/
+unzap
+decompress
