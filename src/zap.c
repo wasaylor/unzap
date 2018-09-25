@@ -100,8 +100,8 @@ bool unzap(void (*cb)(ZapEnt*, const char*), const char *prefix, Bundle *b) {
     return false;
 
   /* buffer vars for decompress */
-  dbuf = malloc(DECOMPRESS_MAX_BLOCK_A);
-  max_a = DECOMPRESS_MAX_BLOCK_A;
+  dbuf = malloc(DECOMPRESS_MAX_ZBLOCK_A);
+  max_a = DECOMPRESS_MAX_ZBLOCK_A;
 
   /* start by setting offset to after the header and ents table */
   file = (uint8_t*)b->header;
@@ -150,8 +150,7 @@ bool unzap(void (*cb)(ZapEnt*, const char*), const char *prefix, Bundle *b) {
       }
 
       /* decompress loop
-         each zblock must be kept in dbuf while calling decompress ..
-         .. because a zblock can reach into a previous one */
+         each zblock must be kept in dbuf while calling decompress */
       for (x = 0, dbufp = dbuf; ent->meta.size.zblocks[x] > 0; x++) {
         size_t a;
 
