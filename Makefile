@@ -1,5 +1,5 @@
 CC ?= clang
-CFLAGS ?= -Wall -std=c11 -march=native -O2
+CFLAGS ?= -Wall -Wpadded -std=c11 -march=native -O2
 
 all: clean unzap
 
