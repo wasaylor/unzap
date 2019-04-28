@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
 #include "decompress.h"
 #include "zap.h"
@@ -17,6 +18,7 @@
 #if defined(_WIN32) || defined(__CYGWIN__)
 #define PATH_SEPARATOR ('\\')
 #else
+/* POSIX */
 #define PATH_SEPARATOR ('/')
 #endif
 
@@ -74,14 +76,29 @@ void ent_name_os_path(ZapEnt *ent, char *out) {
   *out = '\0';
 }
 
-/* Is the ent compressed? */
-static inline bool ent_compress(ZapEnt *ent) {
-  return (ent->meta.size.a > ent->meta.size.z);
-}
+void ent_get(Bundle *b, int i, ZapEnt *ent, bool *empty, bool *compressed) {
+  ptrdiff_t offset;
 
-/* Is the ent empty? */
-static inline bool ent_empty(ZapEnt *ent) {
-  return (ENT_SIZE_EMPTY == ent->meta.size.z);
+  offset = (ZAP_HEADER_SZ + ZAP_ENT_SZ * i);
+
+  /* Copy into each struct field from the mmap file ptr */
+  ent->meta.moffset = *(uint32_t*)(b->file + offset + 0);
+
+  ent->meta.size.a = *(uint32_t*)(b->file + offset + 0x4);
+  ent->meta.size.z = *(uint32_t*)(b->file + offset + 0x8);
+
+  memcpy((void*)ent->meta.size.zblocks,
+    (void*)(b->file + offset + 0xc),
+    (sizeof(uint32_t) * 0x21));
+
+  ent->meta.pad = *(uint32_t*)(b->file + offset + 0x90);
+  ent->meta.unkx94 = *(uint32_t*)(b->file + offset + 0x94);
+
+  memcpy((void*)ent->name, (void*)(b->file + offset + 0x98), 0x100);
+
+  /* Helpers */
+  *compressed = (ent->meta.size.a > ent->meta.size.z);
+  *empty = (ZAP_ENT_Z_EMPTY == ent->meta.size.z);
 }
 
 /* Extracts ents
@@ -89,87 +106,85 @@ static inline bool ent_empty(ZapEnt *ent) {
    `prefix` changes the working directory
    `b` is the ZAP bundle file
    */
-bool unzap(void (*cb)(ZapEnt*, const char*), const char *prefix, Bundle *b) {
+bool zap_unzap(void (*cb)(ZapEnt*, const char*), const char *prefix, Bundle *b) {
   ptrdiff_t offset;
-  uint8_t *file, *dbuf;
+  uint8_t *dbuf;
   size_t max_a;
 
   /* First set the working directory */
   errno = 0;
-  if (prefix && chdir(prefix) == -1)
+  if (prefix != NULL && chdir(prefix) == -1)
     return false;
 
-  /* buffer vars for decompress */
+  /* vars for decompress */
   dbuf = malloc(DECOMPRESS_MAX_ZBLOCK_A);
   max_a = DECOMPRESS_MAX_ZBLOCK_A;
 
-  /* start by setting offset to after the header and ents table */
-  file = (uint8_t*)b->header;
-  offset = (ptrdiff_t)(sizeof(ZapHeader) + (sizeof(ZapEnt) * b->header->numents));
+  /* Start by setting the extract offset to after the header and ents table */
+  offset = (ZAP_HEADER_SZ + ZAP_ENT_SZ * b->header.numents);
 
-  /* walk ents */
-  for (int i = 0; i < b->header->numents; i++) {
-    ZapEnt *ent;
+  /* For each ent in the bundle */
+  for (int i = 0; i < b->header.numents; i++) {
+    ZapEnt ent;
+    bool empty, compressed;
     uint8_t *data;
     char path[255+1];
     FILE *fp = NULL;
 
-    ent = &b->ents[i];
-    (*cb)(ent, NULL); /* callback BEFORE */
+    /* Each file in the bundle is prefixed with a copy of its ent meta, skip
+      then data (the file) is at offset */
+    offset += ZAP_ENT_META_SZ;
+    data = (b->file + offset);
 
-    if (ent_empty(ent)) { /* Skip empty ent */
-      offset += (ptrdiff_t)sizeof(ent->meta);
+    /* Get `i` ent from the table */
+    ent_get(b, i, &ent, &empty, &compressed);
+    (*cb)(&ent, NULL); /* callback BEFORE */
 
-      (*cb)(ent, "<empty>"); /* callback AFTER */
+    if (empty) {
+      /* Skip empty ent */
+      (*cb)(&ent, "<empty>"); /* callback AFTER */
       continue;
     }
 
-    /* ent meta is repeated before z data ..
-       .. set data past it */
-    data = file + offset + (ptrdiff_t)sizeof(ent->meta);
-
-    /* normalize the path
-       The names in the bundle vary by case and path separator */
-    ent_name_os_path(ent, path);
-
-    /* make the neccessary directories for the file path and open */
+    /* Normalize the extract path and make its dir */
+    ent_name_os_path(&ent, path);
     if (mkdirs(path, S_IRWXU|S_IRWXG|S_IRWXO) < 0)
       return false;
+
     if ((fp = fopen(path, "wb")) == NULL)
       return false;
 
-    /* Write */
-    if (ent_compress(ent)) { /* Compressed */
-      int x;
+    /* Extract to fp */
+    if (compressed) { /* Compressed */
       uint8_t *dbufp;
+      int x;
 
       /* Keep track of maximum `a` size */
-      if (ent->meta.size.a > max_a) { 
-        max_a = ent->meta.size.a;
+      if (ent.meta.size.a > max_a) { 
+        max_a = ent.meta.size.a;
         dbuf = realloc(dbuf, max_a);
       }
 
       /* decompress loop
          each zblock must be kept in dbuf while calling decompress */
-      for (x = 0, dbufp = dbuf; ent->meta.size.zblocks[x] > 0; x++) {
+      for (x = 0, dbufp = dbuf; ent.meta.size.zblocks[x] > 0; x++) {
         size_t a;
 
         decompress(data, dbufp, NULL, &a);
-        data += (ptrdiff_t)ent->meta.size.zblocks[x];
-        dbufp += (ptrdiff_t)a;
+        data += ent.meta.size.zblocks[x];
+        dbufp += a;
       }
 
-      fwrite(dbuf, sizeof(uint8_t), ent->meta.size.a, fp);
-    } else {
-      /* Not compressed */
-      fwrite(data, sizeof(uint8_t), ent->meta.size.z, fp);
+      fwrite(dbuf, sizeof(uint8_t), ent.meta.size.a, fp);
+    } else { /* Not compressed, copy the data */ 
+      fwrite(data, sizeof(uint8_t), ent.meta.size.z, fp);
     }
-    fclose(fp);
+    fclose(fp); /* Close the extract file */
 
-    /* Advance offset */
-    offset += (ptrdiff_t)(sizeof(ent->meta) + ent->meta.size.z + ent->meta.pad);
+    /* Advance offset by what was extracted, and the pad */
+    offset += (ent.meta.size.z + ent.meta.pad);
 
-    (*cb)(ent, path); /* callback AFTER */
+    (*cb)(&ent, path); /* callback AFTER */
   }
 
   free(dbuf);
@@ -178,35 +193,37 @@ bool unzap(void (*cb)(ZapEnt*, const char*), const char *prefix, Bundle *b) {
 }
 
 void zap_free(Bundle *b) {
-  munmap((void*)b->header, b->st_size);
-  free(b);
+  if (b) {
+    /* Free the Bundle file ptr */
+    munmap((void*)b->file, b->st_size);
+    free(b);
+  }
 }
 
-Bundle* zap_open_file(const char *path) {
+Bundle* zap_open(const char *path) {
   int fd;
   uint64_t magic;
   struct stat s;
-  uint8_t *file;
+  void *file;
   Bundle *ret;
 
   if ((fd = open(path, O_RDONLY)) < 0)
     return NULL;
 
-  if (fstat(fd, &s) < 0) {
+  if (fstat(fd, &s) < 0) { /* fstat failed */
     close(fd);
     return NULL;
   }
 
   /* must be at least the size of the header */
-  if (s.st_size < sizeof(ZapHeader)) {
+  if (s.st_size < ZAP_HEADER_SZ) {
     close(fd);
     return NULL;
   }
 
   /* check the magic before reading the entire file */
   if (read(fd, &magic, sizeof(uint64_t)) < sizeof(uint64_t) ||
-    magic != ZAP_HEADER_MAGIC) {
-  
+    (magic != ZAP_HEADER_MAGIC)) {
     close(fd);
     return NULL;
   }
@@ -226,9 +243,12 @@ Bundle* zap_open_file(const char *path) {
     return NULL;
 
   ret = malloc(sizeof(Bundle));
+  ret->file = (uint8_t*)file; /* cast as byte* */
   ret->st_size = s.st_size;
-  ret->header = (ZapHeader*)file;
-  ret->ents = (ZapEnt*)(file + (ptrdiff_t)sizeof(ZapHeader));
+
+  ret->header.magic = *(uint64_t*)(ret->file);
+  ret->header.numents = *(uint32_t*)(ret->file + 0x8);
+  ret->header.unkx0c = *(uint32_t*)(ret->file + 0x0c);
 
   return ret;
 }

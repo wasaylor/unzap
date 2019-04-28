@@ -7,7 +7,7 @@
 
 static const char * const usage = "usage: unzap [working dir] <bundle>\n";
 
-/* callback function for unzap */
+/* callback function for zap_unzap */
 static void cb(ZapEnt *ent, const char *path) {
   if (!path) { /* before */
     fprintf(stderr, "extracting \"%s\" ... ", ent->name);
@@ -29,6 +29,7 @@ int main(int argc, char *argv[]) {
   }
 
   if (argc == 2) {
+    prefix = NULL;
     path = argv[1];
   } else if (argc == 3) {
     prefix = argv[1];
@@ -36,7 +37,7 @@ int main(int argc, char *argv[]) {
   }
 
   /* Load the bundle file */
-  if ((b = zap_open_file(path)) == NULL) {
+  if ((b = zap_open(path)) == NULL) {
     fprintf(stderr, "failed to open bundle file: %s\n",
       errno > 0 ? strerror(errno) : "?");
 
@@ -45,7 +46,7 @@ int main(int argc, char *argv[]) {
   }
 
   /* Extract */
-  if (!unzap(cb, prefix, b)) {
+  if (!zap_unzap(cb, prefix, b)) {
     fprintf(stderr, "ERROR: %s\n",
       errno > 0 ? strerror(errno) : "?");
 
@@ -53,8 +54,7 @@ int main(int argc, char *argv[]) {
     return 2;
   }
 
-  fprintf(stderr, "done\n");
-
   zap_free(b);
+
   return 0;
 }

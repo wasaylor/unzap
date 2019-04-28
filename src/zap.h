@@ -6,8 +6,12 @@
 /* Star Wars: Bounty Hunter ZAP file structure defs
    all in little-endian */
 
+#define ZAP_HEADER_SZ ((size_t)0x10)
+#define ZAP_ENT_META_SZ ((size_t)0x98)
+#define ZAP_ENT_SZ ((size_t)0x198)
+
 #define ZAP_HEADER_MAGIC ((uint64_t)0x0123456789abcdef)
-#define ENT_SIZE_EMPTY ((uint32_t)0xdcdcdcdc)
+#define ZAP_ENT_Z_EMPTY ((uint32_t)0xdcdcdcdc)
 
 typedef struct {
   uint64_t magic;   /* ZAP_HEADER_MAGIC */
@@ -20,7 +24,7 @@ typedef struct {
     uint32_t moffset;     /* in-game memory offset, irrelevant here */
     struct {
       uint32_t a;         /* decompress size, eq to z if not compress */
-      uint32_t z;         /* zap (compress) size or ENT_SIZE_EMPTY */
+      uint32_t z;         /* zap (compress) size or ZAP_ENT_Z_EMPTY */
       uint32_t zblocks[0x21]; /* z broken into smaller pieces - per call to decompress(...) */
     } size;
     uint32_t pad;         /* aligns size.z by 0x10 w/ (uint8_t)0xdc */
@@ -32,11 +36,11 @@ typedef struct {
 /* _not_ part of the file structure
    */
 typedef struct {
+  uint8_t *file; /* from mmap */
   size_t st_size; /* total size of the file from fstat */
-  ZapHeader *header;
-  ZapEnt *ents;
+  ZapHeader header; /* Copy of the header from file */
 } Bundle;
 
-bool unzap(void (*cb)(ZapEnt*, const char*), const char *prefix, Bundle *b);
+bool zap_unzap(void (*cb)(ZapEnt*, const char*), const char *prefix, Bundle *b);
 void zap_free(Bundle *b);
-Bundle* zap_open_file(const char *path);
+Bundle* zap_open(const char *path);
